@@ -36,6 +36,7 @@
 			- Remove sites that fail Hardy-Weinberg Equilibrium
 			
 #### Step 4: Run MEM pipeline
+
 Note : This step assumes that bedtols V2.26.0 or higher (https://github.com/arq5x/bedtools2) is installed. It can be in the path or full path can be provided using '--tool' argument.
 
 	- Script provided: MEM_windowAnalysis.pl
