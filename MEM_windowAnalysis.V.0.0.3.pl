@@ -1,749 +1,310 @@
-#!/usr/bin/perl -w
-
-#####################################################################
-##
-## File Name:
-##   MEM_windowAnalysis.pl
-##
-## Description:
-##   Runs sliding window analysis to detect mendelian error clusters.
-##
-## Usage:
-##   Default Usage: perl MEM_windowAnalysis.pl -c cases_list
-##
-## Author:
-##   Nihir Patel (nihir.patel@mssm.edu)
-##
-## Date:
-##   Fri Jul 28 16:00:00 EST 2017
-## 
-##	Changes
-##	Wed Aug 16 14:52:48 EDT 2017 : Fixed Merging sub routine 
-##	Wed Aug 16 17:30:25 EDT 2017 : Resolve issue where two distinct events were merged due to same values in Min,max and Mean
-##  Implemented single filter for both rounds
-##	Implemented Separate of Sample and create individuale VCF 
-##	Added bedtools merging for split calls.
-#####################################################################
+#!/usr/bin/perl 
+#########################################################################
+#  Script     : ME_UPD_Contamination_Detection_From_TrioVCF.V2.pl
+#  Author     : Nihir Patel
+#  E-mail     : nihir.patel@mssm.edu
+#  Date       : 08/23/2016
+#  Last Edited: 06/20/2017, Nihir Patel
+#  Description: Extract mendalian error given VCF input and pedigree input
+#	
+##########################################################################
 
 use strict;
-use warnings;
-use IO::Zlib;
-use Getopt::Long qw(:config no_ignore_case);
+use Getopt::Long qw(:config posix_default bundling no_ignore_case);;
 use Scalar::Util qw(looks_like_number);
-use Carp qw/croak/;
-use File::Basename;
- 
-my $case_input_list = '';  # list_of_cases_case_input_lists.txt
-my $bground_input_list = 'none';  # list_of_bground_case_input_lists.txt
-my $name = 'MEM';
-my $window = 2000000;
-my $slide = 100000;
-my $filter_bground_ME = 2; 
-my $filter_cases_ME = 1;
-my $filter_bground_sample = 3; 
-my $filter_rescue_cases_ME = 5; # max me in cases
-my $run_from = 'Round1';
-my $step_check = 'incomplete';
-my $tool = 'bedtools'; 
-my $genome = 'b37.genome.bed';
-my $analysis = 'both';
 
+my $input = '';
+my $maxDP = 1000;
+my $minDP = 5;
+my $altBAF = 0.9;
+my $refBAF = 0.1;
+my $hetBAF_max = 0.8; 
+my $hetBAF_min = 0.3;
+my $minGQ = 30;
+my $minAAD = 3;
+my $type = 'SNP'; # Hidden feature , for INDEL inclusion, not recommended and not tested 
+my $vqsr = 'PASS';
+my $out_prefix = 'output';
+my $pedigree = "none";
+my $SNP_all = 'No';  # Hidden feature ,for output all SNPs
+my %CHROMOSOME = (chr1 => 1, chr2 => 2, chr3 => 3, chr4 => 4, chr5 => 5, chr6 => 6, chr7 => 7, chr8 => 8, chr9 => 9, chr10 => 10, chr11 => 11, chr12 => 12, chr13 => 13, chr14 => 14, chr15 => 15, chr16 => 16, chr17 => 17, chr18 => 18, chr19 => 19, chr20 => 20, chr21 => 21, chr22 => 22);
+
+my @data = ();
 
 help() if (@ARGV < 1);
-GetOptions(
-	'analysis|a=s' => \$analysis,
-	'bground_input_list|b=s' => \$bground_input_list,
-	'case_input_list|c=s' => \$case_input_list,
-	'filter_bground_ME|X=i' => \$filter_bground_ME,
-	'filter_cases_ME|Y=i' => \$filter_cases_ME,
-	'filter_bground_sample|Z=i' => \$filter_bground_sample,
-	'filter_rescue_cases_ME|M=i' => \$filter_rescue_cases_ME,
-	'genome|g=s' => \$genome,
-	'name|n=s' => \$name,
-	'run_from|r=s' => \$run_from,
-	'slide|s=i' => \$slide,
-	'tool|t=s' => \$tool,
-	'window|w=i' => \$window,
-   	'help|h' => \my $help,
-   	'verbose|v' => \my $verbose);
+GetOptions('input|i=s' => \$input,
+	'out_prefix|o=s' => \$out_prefix,
+	'pedigree|p=s' => \$pedigree,
+	'VQSRfilter|V=s' => \$vqsr,
+	'minDP|d=i' => \$minDP,
+	'maxDP|D=i' => \$maxDP,
+	'minAAD|c=i' => \$minAAD,
+	'altBAF|a=f' => \$altBAF,
+	'refBAF|R=f' => \$refBAF,
+	'hetBAF_min|m=f' => \$hetBAF_min,
+	'hetBAF_max|H=f' => \$hetBAF_max,
+	'minGQ|G=i' => \$minGQ,
+	'SNP_all|S=s' => \$SNP_all,
+ 	'help|h' => \my $help,
+ 	'verbose|v' => \my $verbose);
 
-if($bground_input_list eq 'none'){
-	$analysis = 'cases';
+help() if ( defined $help );
+verbose() if(defined $verbose or !defined($input) or $pedigree eq 'none'); ## If input is not provided
+
+print STDERR "Options USED: 
+input(i) => $input
+out_prefix(o) => $out_prefix
+pedigree(p) => $pedigree
+VQSRfilter(V) => $vqsr
+minDP(d) => $minDP
+maxDP(D) => $maxDP
+min_AAD(c) => $minAAD
+altBAF(a) => $altBAF
+refBAF(R) => $refBAF
+hetBAF_min(m) => $hetBAF_min
+hetBAF_max(H) => $hetBAF_max
+minGQ(G) => $minGQ
+\n";
+
+my %sample = ();
+my %sample1 = ();
+my %hash = ();
+my %hash1 = ();
+my @ped_sample = (); 
+my $error = 0;
+my $snp = 0;
+my $chr = 1;
+
+open(DATA, $pedigree) or die "cannot open pedigree input $pedigree\n"; 
+my @data = <DATA>; chomp @data;
+print STDERR "$data[0]\n";
+
+if ($input =~ /\.gz$/){
+	open(IN, "gzip -dc $input |") || die "can't open $input\n";
+}
+else{
+	open(IN, $input) or die "cannot open vcf input $input\n"; #vcf input
 }
 
+my $vcf ="$out_prefix".".ME.snps.txt";
+open(ERR, ">$vcf"); #
 
-checkNexit("$genome");
-my $overlap = $window * (-1);
-my $windowFile_R1="$name.b37.Round1.$window.window.$slide.slide.bed";
-my $windowFile_R2="$name.b37.Round2.$window.window.$slide.slide.bed";
-
-help() if(defined $help);
-verbose() if(defined $verbose or !defined($case_input_list)); ## If input is not provided
-
-#General Running argument
-sub help{
-	print STDERR "Default Usage:\n	MEM_windowAnalysis.pl -c cases
-
-Arguments:
-	-a, --analysis			Analysis type [both or cases]
-	-b, --bground			List of Control Files, ME files must be in bed format [Require if -a is both]
-	-c, --cases			List of Cases Files [Require if run_from is not provided]
-	-g, --genome			Genome file containing start and end of autosomal chromosome in b37 version [required, provided along with tool]
-	-n, --name			Name to attched to intermediate File
-	-r, --run_from			Round1 analysis for intermediate steps, available options are Round1, Merge1, Round2, Merge2
-	-s, --slide 			Size of slide [Required][Default 100000 ]
-	-w, --window			Size of window [Required][Default 2000000 ]
-	-t, --tool			Full path to bedtools [required] [Default : bedtools]
-	-M, --rescue_cases_ME 		Min ME count to Rescue the window  after Step1[Default 5 ]
-	-X, --filter_bground_ME 	Max ME count in bground to filter window after Step1 [Default 2 ]	
-	-Y, --filter_cases_ME 		Min ME count required cases to consider as cluster  [Default 1 ]
-	-Z, --filter_bground_sample 	Max Sample count in bground to filter window after Step1 [Default 3 ]	
-	-h, --help			Usage summary
-	-v, --verbose			Detailed Usage Information\n";
-exit();
+if($SNP_all ne 'No'){
+	my $vcf2 ="$out_prefix".".all.snps.txt";
+	open(ALL, ">$vcf2"); #
 }
-
-# Verbose information for running tool
-sub verbose{
-	print STDERR "Default Usage:\n	MEM_windowAnalysis.pl  -c cases -b bground -r run_from -w 2000000 -s 100000 -X 5 -Z 3 -Y 1 -M 5
-
-Arguments:
-	-a, --analysis			Analysis type [both or cases]
-	-b, --bground			List of Control Files, ME files must be in bed format [Require if -a is both]
-	-c, --cases			List of Cases Files [Require if run_from is not provided]
-	-g, --genome			Genome file containing start and end of autosomal chromosome in b37 version [required, provided along with tool]
-	-n, --name			Name to attched to intermediate File
-	-r, --run_from			Round1 analysis for intermediate steps, available options are Round1, Merge1, Round2, Merge2
-	-s, --slide 			Size of slide [Required][Default 100000 ]
-	-w, --window			Size of window [Required][Default 2000000 ]
-	-t, --tool			Full path to bedtools [required] [Default : bedtools]
-	-M, --rescue_cases_ME 		Min ME count to Rescue the window[Default 5 ]
-	-X, --filter_bground_ME 	Max ME count in bground to filter window after Step1 [Default 5 ]	
-	-Y, --filter_min_cases_ME 		Min ME count in cases to rescue window after Step1 [Default 1 ]
-	-Z, --filter_bground_sample 	Max Sample count in bground to filter window after Step1 [Default 3 ]	
-	-h, --help			Usage summary
-	-v, --verbose			Detailed Usage Information\n";
-exit();
-}
-
-## Sub for checking files and Exist if file is missing
-sub checkNexit{
-	my $file = $_[0];
-	unless (-e $file and !(-z $file)){print STDERR "File $file Dosen't exists or is Empty\n"; exit ();}
-	unless (!(-d $file)){print STDERR "File $file is a Directory\n"; exit ();}
-}
-
-sub checkFile{
-	my $file = $_[0];
-	my $fname = $_[1]; 
-	my $check = 'false';
-	if(-z $file or (!(-e $file)) or -d $file){print STDERR "File $fname do not contains information in Autosomes  or it is empty. The file will be ignored\n"; $check = "true";}
-	return $check; 
-}
-
-## Check if bedtools is available 
-my $BEDTOOLS = ''; 
-for my $path ( split /:/, $ENV{PATH} ){
-	if (-f "$path/$tool" && -x _){
-		$BEDTOOLS="$path/$tool";
-	    last;
-	}
-	elsif  (-f "$tool" && -x _){
-		$BEDTOOLS="$tool";
-	    last;
-	} 
-}
-die "bedtool is not available, please install or provide full path\n" unless ( -f $BEDTOOLS );
-
-
-if($run_from ne 'round1' and $run_from ne 'Round1' and $run_from ne 'Merge1' and $run_from ne 'Round2' and $run_from ne 'Round2' and $run_from ne 'merge2' and $run_from ne 'Merge2' and $run_from ne 'split' and $run_from ne 'SPLIT' ){
-	print STDERR "###########################\nError Occured !!!!!!!! \n\n"; 
-	print STDERR "Please choose correct Start Point : Valid options are Round1, Merge1, Round2 and Merge2\n###########################\n\n"; 
-	verbose();
-}
-
-print STDERR "######################################################################################################\nOptions USED: 
-analysis(a) => $analysis
-bground_input_list(b) => $bground_input_list
-case_input_list(c) => $case_input_list
-window(w) => $window
-slide(s) => $slide
-output_id(s) => $name\n
-
-Parameters for filtering after Round 1 are as below 
-bground max ME Filter(X) => $filter_bground_ME
-Control max Sample filter (Z) => $filter_bground_sample
-Cases min ME filter (Y) => $filter_cases_ME
-Max ME in cases to rescue the window(M) => $filter_rescue_cases_ME
-######################################################################################################\n";
-
-if ($analysis eq 'both'){
-	system "printf '#CHROM\tStart\tEND\tSample\tNum_Sample\tMin_ME\tMax_ME\tMean_ME\t#CHROM\tStart\tEnd\tSample_bground\tNum_Sample_bground\tMin_ME_bground\tMax_ME_bground\tMean_ME_bground\n' > .merged.header.txt";
-}else{
-	system "printf '#CHROM\tStart\tEND\tSample\tNum_Sample\tMin_ME\tMax_ME\tMean_ME\n' > .merged.header.txt";
-}
-if(lc($run_from) eq 'round1' or $run_from eq 'Round1'){
-
-	checkNexit($case_input_list); 
-	checkNexit($bground_input_list) if ($analysis eq 'both');
+while(<IN>){
+	my $l = $_; chomp $l; 
+	my @s = split(/\t/,$l);
 	
-	#### Runwindow analysis ## case_input_list containing Filtered ME bed case_input_lists (ME script output VCF)  
-	print STDERR "\nRuning window Analysis for samples in $case_input_list file with window of $window and slide of $slide\n";
-	print STDERR "######################################################################################################\n\n";
-	
-	system "$BEDTOOLS makewindows -b $genome -w $window -s $slide > $windowFile_R1";
-	
-	checkNexit("$windowFile_R1"); 
-	
-	countMEPerWindow ($case_input_list,$windowFile_R1,"$name.Round1");
-	checkNexit("$case_input_list.$name.Round1.data.mat");
-	
-	#system "sh RunwindowAnalysis.sh $case_input_list $window $slide cases $BEDTOOLS";
-	
-	print STDERR "Completed window Analysis for samples in $case_input_list file\n";
-	print STDERR "######################################################################################################\n\n";
-	
-	if ($analysis eq 'both'){
-		print STDERR "Running window Analysis for samples in $bground_input_list file with window of $window and slide of $slide\n";
-			
-		#system "sh RunwindowAnalysis.sh $bground_input_list $window $slide bground";
-		print STDERR "Completed window Analysis for samples in $bground_input_list file\n";
-		print STDERR "######################################################################################################\n\n";
-		
-		# countMEPerWindow(input_sample_list,windowFil,mid_string_for_round recognition)
-		countMEPerWindow($bground_input_list,$windowFile_R1,"$name.Round1");
-		checkNexit("$bground_input_list.$name.Round1.data.mat");
-	}
-	print STDERR "Now Checking Size of the $case_input_list.$name.Round1.data.mat \n";
-	
-	### Check if case_input_lists are okey 
-	my $f2 = 'Ok';
-	my $f1 = 'Ok';
-	if ($analysis eq 'both'){$f2 = get_dims("$bground_input_list.$name.Round1.data.mat");}
-	$f1 = get_dims("$case_input_list.$name.Round1.data.mat");
-	
-
-	#print STDERR "\n\n$f2\n\n"; 
-
-	if($f1 eq 'Exit'){
-		print STDERR "File $case_input_list.$name.Round1.data.mat have incorrect number of dimension please check your cases samples\n";
-		print STDERR "After correcting both $case_input_list.$name.Round1.data.mat file and $bground_input_list.$name.Round1.data.mat file you can  re-run the analysis from the next step\n";
-		print STDERR "perl Run_window_Analysis.pl -r mid -w $window -s $slide -p $name\n"; 
-		exit;
-	}
-	
-	elsif($f2 eq 'Exit' ){
-		print STDERR "File $bground_input_list.$name.Round1.data.mat have incorrect number of dimension please check your cases samples\n"; 
-		print STDERR "After correcting both $case_input_list.$name.Round1.data.mat file and $bground_input_list.$name.Round1.data.mat file you can  re-run the analysis from the next step\n";
-		print STDERR "perl Run_window_Analysis.pl -r mid -w $window -s $slide -p $name\n"; 
-		exit;
-	}
-	else{
-		$step_check = 'complete'; 
-	}
-}	
-##################################################################
-
-if(lc($run_from) eq 'merge1' or $run_from eq 'Merge1' or $step_check eq 'complete'){
-	$step_check = 'incomplete';
-	#Step2 : Seprate windows for each sample (Convert to Row) BOTH for cases and bground 
-
-	checkNexit("$case_input_list.$name.Round1.data.mat");	
-	checkNexit("$bground_input_list.$name.Round1.data.mat") if ($analysis eq 'both');
-	
-	print STDERR "Converting matrix to row file for Cases and bground\n"; 
-	convertTOrow("$case_input_list.$name.Round1.data.mat", "$case_input_list.$name.$window.$slide.row.txt");
-	convertTOrow("$bground_input_list.$name.Round1.data.mat", "$bground_input_list.$name.$window.$slide.row.txt") if ($analysis eq 'both');
-	
-	checkNexit("$case_input_list.$name.$window.$slide.row.txt");
-	checkNexit("$bground_input_list.$name.$window.$slide.row.txt") if ($analysis eq 'both');
-	
-	print STDERR "Done Conversion\n"; 
-	print STDERR "############################################################################################\n\n";
-	print STDERR "Combining files\nOverlap used is $overlap BPs\n";
-
-	system "$BEDTOOLS merge -d $overlap -i $case_input_list.$name.$window.$slide.row.txt -c 5,5,4,4,4 -o distinct,count_distinct,min,max,mean -delim '|' > $case_input_list.$window.$slide.uniq.windows.merged.bed";
-	
-	if ($analysis eq 'both'){
-		system "$BEDTOOLS merge -d $overlap -i $bground_input_list.$name.$window.$slide.row.txt -c 5,5,4,4,4 -o distinct,count_distinct,min,max,mean -delim '|' > $bground_input_list.$window.$slide.uniq.windows.merged.bed";
-		system "$BEDTOOLS intersect -a $case_input_list.$window.$slide.uniq.windows.merged.bed -b $bground_input_list.$window.$slide.uniq.windows.merged.bed -loj -wa -wb -f 1 -r  > $name.Round1_merged.bed";
-	
-	}else{
-		system "mv -v $case_input_list.$window.$slide.uniq.windows.merged.bed $name.Round1_merged.bed";
-	}
-
-	checkNexit("$name.Round1_merged.bed");
-	checkNexit("$case_input_list.$name.$window.$slide.row.txt");
-	print STDERR "Done Merging Files, output of First Round is $name.Round1_merged.bed\n"; 
-	
-	print STDERR "############################################################################################\n\n";
-	
-	if ($analysis eq 'both'){	
-		## Step 4: Filter based on bground
-		# If Max ME in cases <= 5 and bground has 3 or more samples with avg ME > 2 - filter out window
-		# Filter out windows with Max ME = 1 in cases		
-		
-		print STDERR "Filtering the merged file using the bground data and provided filter\n"; 
-		PostMergeCasesbgroundFilter ("$name.Round1_merged.bed", $filter_bground_ME, $filter_cases_ME, $filter_bground_sample, $filter_rescue_cases_ME, "$name.Round1_merged_filtered.bed");		
-	
-	}else{
-		print STDERR "Removing empty rows filter\n"; 	
-		PostMergeCasesOnlyFilter ("$name.Round1_merged.bed","$name.Round1_merged_filtered.bed");	
-	}	
-	checkNexit("$name.Round1_merged_filtered.bed");
-
-	print STDERR "Re-merge windows .......\n"; 
-	print STDERR "IF you have same number of Samples in columns 3, same number of min, max and mean ME, that means it's single window and such window will be merged\n";
-	mergeFinalFile("$name.Round1_merged_filtered.bed","$name.Round1_merged_filtered_collapse.bed");
-
-	checkNexit("$name.Round1_merged_filtered_collapse.bed");
-	$step_check = 'complete'; 
-}
-
-################################################################################
-######## Round 2 ############
-################################################################################
-	
-if(lc($run_from) eq 'round2' or $run_from eq 'Round2' or $step_check eq 'complete'){	
-	checkNexit("$name.Round1_merged_filtered_collapse.bed");
-	$step_check = 'incomplete'; 
-
-	checkNexit("$case_input_list.$name.updated.list");
-	checkNexit("$bground_input_list.$name.updated.list") if ($analysis eq 'both');
-
-	print STDERR "Round 1 Analysis completed, initializing Round 2 analysis \n";
-	print STDERR "############################################################################################\n\n"; 
-
-	print STDERR "Getting ME counts for merge windows\n";
-	
-	system "cut -f1-3 $name.Round1_merged_filtered_collapse.bed > $windowFile_R2";
-	checkNexit("$windowFile_R2");
-		
-	print STDERR "Second Part has been sucessfully completed, continuing analysis with the Mering Script\n";  
-	print STDERR "############################################################################################\n\n"; 
-	print STDERR  "";
-
-	#####system "sh Round2MergedCombined.sh $name";
-	countMEPerWindow("$case_input_list.$name.updated.list","$windowFile_R2","Round2");
-	countMEPerWindow("$bground_input_list.$name.updated.list","$windowFile_R2","Round2") if ($analysis eq 'both');
-	
-
-	my $f1_R2 = 'Ok'; my $f2_R2 = 'OK';
-	
-	$f1_R2 = get_dims("$case_input_list.$name.updated.list.Round2.data.mat");
-	$f2_R2 = get_dims("$bground_input_list.$name.updated.list.Round2.data.mat") if ($analysis eq 'both');
-		
-	checkNexit("$case_input_list.$name.updated.list.Round2.data.mat");
-	checkNexit("$bground_input_list.$name.updated.list.Round2.data.mat") if ($analysis eq 'both');
-	
-	if($f1_R2 eq 'Exit'){
-		print STDERR "File $case_input_list.$name.updated.list.Round2.data.mat have incorrect number of dimension please check your cases samples\n";
-		print STDERR "After correcting both $case_input_list.$name.updated.list.Round2.data.mat file and $bground_input_list.$name.updated.list.Round2.data.mat file you can  re-run the analysis from the next step\n";
-		print STDERR "perl Run_window_Analysis.pl -r Round2 -w $window -s $slide -i $name\n"; 
-		exit;
-	}
-	elsif($f2_R2 eq 'Exit' and $analysis eq 'both'){
-		print STDERR "File $bground_input_list.$name.updated.list.Round2.data.mat have incorrect number of dimension please check your cases samples\n"; 
-		print STDERR "After correcting both $case_input_list.$name.updated.list.Round2.data.mat file and $bground_input_list.$name.updated.list.Round2.data.mat file you can  re-run the analysis from the next step\n";
-		print STDERR "perl Run_window_Analysis.pl -r Round2 -w $window -s $slide -i $name\n"; 
-		exit;
-	}
-	else{
-			$step_check = 'complete'; 
-	}
-}
-
-if(lc($run_from) eq 'merge2' or $run_from eq 'Merge2' or $step_check = 'complete'){
-	
-	checkNexit("$case_input_list.$name.updated.list.Round2.data.mat");
-	checkNexit("$bground_input_list.$name.updated.list.Round2.data.mat") if ($analysis eq 'both');
-
-	convertTOrow ("$case_input_list.$name.updated.list.Round2.data.mat","$case_input_list.$name.Round2.$window.$slide.row.txt");
-	convertTOrow ("$bground_input_list.$name.updated.list.Round2.data.mat","$bground_input_list.$name.Round2.$window.$slide.row.txt") if ($analysis eq 'both');
-
-	checkNexit("$case_input_list.$name.Round2.$window.$slide.row.txt");
-	checkNexit("$bground_input_list.$name.Round2.$window.$slide.row.txt") if ($analysis eq 'both');
-
-	
-	print STDERR "Done Conversion\n"; 
-	print STDERR "#####################################################################\n\n";
-	
-	print STDERR "Combined files\nOverlap used is $overlap BPs\n";
-
-	system "$BEDTOOLS merge -d $overlap -i $case_input_list.$name.Round2.$window.$slide.row.txt -c 5,5,4,4,4 -o distinct,count_distinct,min,max,mean -delim '|' > $case_input_list.Round2.$window.$slide.uniq.windows.merged.bed";
-	 
-	if ($analysis eq 'both') {
-		system "$BEDTOOLS merge -d $overlap -i $bground_input_list.$name.Round2.$window.$slide.row.txt -c 5,5,4,4,4 -o distinct,count_distinct,min,max,mean -delim '|' > $bground_input_list.Round2.$window.$slide.uniq.windows.merged.bed";
-		system "$BEDTOOLS intersect -a $case_input_list.Round2.$window.$slide.uniq.windows.merged.bed -b $bground_input_list.Round2.$window.$slide.uniq.windows.merged.bed -loj -wa -wb -f 1 -r  > $name.Round2_merged.bed";
-
-	}else{
-		system "mv -v $case_input_list.Round2.$window.$slide.uniq.windows.merged.bed $name.Round2_merged.bed";
-	}
-	checkNexit("$name.Round2_merged.bed");
-
-	if ($analysis eq 'both'){	
-		## Step 4: Filter based on bground
-		# If Max ME in cases <= 5 and bground has 3 or more samples with avg ME > 2 - filter out window
-		# Filter out windows with Max ME = 1 in cases		
-		
-		print STDERR "Filtering the merged file using the bground data and provided filter\n"; 
-		PostMergeCasesbgroundFilter ("$name.Round2_merged.bed", $filter_bground_ME, $filter_cases_ME, $filter_bground_sample, $filter_rescue_cases_ME, "$name.Round2_merged_filtered.bed");		
-	
-	}else{
-		print STDERR "Removing empty rows filter\n"; 	
-		PostMergeCasesOnlyFilter ("$name.Round2_merged.bed","$name.Round2_merged_filtered.bed");	
-	}	
-	checkNexit("$name.Round2_merged_filtered.bed");
-	
-	system "cat .merged.header.txt $name.Round1_merged.bed > temp && mv temp $name.Round1_merged.bed"; 	
-	system "cat .merged.header.txt $name.Round2_merged.bed > temp && mv temp $name.Round2_merged.bed"; 	
-	print STDERR "Done Merging Files For Round2, output of Second Round is $name.Round2_merged.bed\nContinue further analysis and Filtering as needed\n"; 
-	print STDERR "#######################################################################\n\n";
-	$step_check = 'complete';
-
-}	
-
-
-if(lc($run_from) eq 'split' or $run_from eq 'SPLIT' or $step_check = 'complete'){
-
-	SeperateSample("$name.Round2_merged_filtered.bed","$name.Round2_merged_filtered.SeperateSample.txt");
-	checkNexit("$name.Round2_merged_filtered.SeperateSample.txt");
-	SplitBySample("$name.Round2_merged_filtered.SeperateSample.txt",4);
-	checkNexit("$name.ME.SepSample.list"); 
-	
-	open(MEM,"$name.ME.SepSample.list");
-	while(<MEM>){
-		chomp $_; 
-		my $me_file = $_;
-		$me_file =~ s{\.[^.]+$}{}; 
-		system "printf \"#CHROM\tStart\tEnd\tSample\tME_Per_Merged_Window\tNum_Window\tMin_ME\tMax_ME\tMean_ME\n\" > $me_file.merged.bed";
-		system "bedtools merge -i $me_file.bed -c 4,5,5,5,5,5 -o distinct,collapse,count,min,max,mean -delim \"|\" >> $me_file.merged.bed";
-		# FilterRound3(input,output,number of me to filer)
-		FilterRound3("$me_file.merged.bed","$me_file.merged.filter.bed",2);
-		
-	}
-	close (MEM); 
-}
-
-## Filter last step 
-
-cleanFile("$case_input_list.Round2.$window.$slide.uniq.windows.merged.bed");
-cleanFile("$bground_input_list.Round2.$window.$slide.uniq.windows.merged.bed");
-cleanFile("$case_input_list.$name.updated.list.$name.updated.list");
-cleanFile("$bground_input_list.$name.updated.list.$name.updated.list");
-
-if ($analysis eq 'both'){
-	cleanFile ("$bground_input_list.$window.$slide.uniq.windows.merged.bed");
-	cleanFile ("$case_input_list.$window.$slide.uniq.windows.merged.bed");
-	cleanFile ("$bground_input_list.$name.$window.$slide.row.txt");
-}
-
-
-sub convertTOrow {
-	my $in = $_[0]; 
-	my $out = $_[1]; 
-	open(OUT, ">$out");
-	open(IN,$in) or die "File $in can not be opened\n"; 
-	my $j = 0; my @data = ();
-	while(<IN>){
-		chomp $_; 
-		my @s = split(/\t/,$_);
-		if($j ==0){
-			for(my $i = 3 ; $i < scalar@s; $i++){
-				$data[$i] = $s[$i];
-			}
-			$j++;
-		} else {
-			for(my $i = 3 ; $i < scalar@s; $i++){ 
-	        	if($s[$i] ne '.' and $s[$i] > 0){print OUT "$s[0]\t$s[1]\t$s[2]\t$s[$i]\t$data[$i]\n";}
-	        }
+	if($l =~ /#CHROM/){
+		for(my $i = 9 ; $i < scalar@s ; $i++){ # Add sample info to hash
+			$sample{$i} = $s[$i];
+			$sample1{$s[$i]} = $i;
 		}
-	}
-	close(IN);
-	close(OUT);
-}
 
-sub mergeFinalFile {
-	my $in=$_[0];
-	my $out=$_[1];
-	my $win=$_[2];
-	
-	open(IN2,$in); my @data = <IN2> ; chomp @data;
-	open(OUT,">$out");
-	my $str = ""; 
-	my $i = 0 ;
-	my $end = ""; 
-	my @s2 = ();
-	for(my $i = 0; $i < scalar@data; $i++){
-		my $l = $data[$i];
-		chomp $l; 
-		my  @s = split(/\t/,$l); 
-        my $ll = $data[$i-1];
-       	@s2  = split(/\t/,$ll);		
-		my $check = "$s[0]\t$s[3]\t$s[4]\t$s[5]\t$s[6]"; #Chrom,SampleID,Min,Max,Mean
-	
-		if($str ne $check or ($s2[2] < $s[1]) and $s2[0] == $s[0]){
-			$str = $check;
-		 	if($i == 0){
-		 		print OUT "$s[0]\t$s[1]\t";
-		 	}## First Line
-			else{
-				print OUT "$s2[2]\t$s2[3]\t$s2[4]\t$s2[5]\t$s2[6]\t$s2[7]\n";
-				print OUT "$s[0]\t$s[1]\t";
+		#### Validate Pedigree input
+
+		my $j = 0; # It is important 
+		print STDERR "\nMake sure Pedigree order is correct : FamilyID Proband Father Mother\n";
+		for(my $i = 0 ; $i < scalar@data; $i++){
+			my @D = split(/\t/,$data[$i]);
+			if(exists($sample1{$D[1]}) and exists($sample1{$D[2]}) and exists($sample1{$D[3]}) and $data[$i] !~ /#/){
+				@ped_sample[$j] = $data[$i];$j++;
+			}
+			elsif($data[$i] !~ /#/){
+				print STDERR "Family $D[0] do not have all Trio sample within $input, The $D[0] will be ignored\n"; 
 			}
 		}
-		$end = "$s[2]\t$s[3]\t$s[4]\t$s[5]\t$s[6]\t$s[7]\n";
+		print ERR "#CHROM\tSTART\tEND\tREF\tALT\tFilter\tBlindID\tME?\tchild_genotype\tchild_ref_count\tchild_alt_count\tchild_read_depth\tchild_GQ\tchild_BAF\tmom_genotype\tmom_ref_count\tmom_alt_count\tmom_read_depth\tmom_GQ\tmom_BAF\tdad_genotype\tdad_ref_count\tdad_alt_count\tdad_read_depth\tdad_GQ\tdad_BAF\n";
+		print ALL "#CHROM\tSTART\tEND\tREF\tALT\tFilter\tBlindID\tME?\tchild_genotype\tchild_ref_count\tchild_alt_count\tchild_read_depth\tchild_GQ\tchild_BAF\tmom_genotype\tmom_ref_count\tmom_alt_count\tmom_read_depth\tmom_GQ\tmom_BAF\tdad_genotype\tdad_ref_count\tdad_alt_count\tdad_read_depth\tdad_GQ\tdad_BAF\n" if($SNP_all ne 'No');
+
 	}
-	print OUT "$end";
-	close(IN2);
-	close(OUT);
-}	
+	my	$chr = "chr"."$s[0]";
+	if(exists($CHROMOSOME{$s[0]}) or exists($CHROMOSOME{$chr})){
+		### Initialization 
+		my $idx_GT = 0;
+		my $idx_AD = '';
+		my $idx_DP = 0;
+		my $idx_GQ = 0;
+		my $idx_PL = '';
+		my $child_BAF = -1;
+		my $mom_BAF  = -1;
+		my $dad_BAF = -1;
 
-sub PostMergeCasesbgroundFilter {
-
-	my $in = $_[0];
-	my $filter_bground_ME = $_[1] // 2; 
-	my $filter_cases_ME = $_[2] // 1;
-	my $filter_bground_sample = $_[3] // 3; 
-	my $filter_rescue_cases_ME = $_[4] // 5;
-	my $out = $_[5] // "$name.Round1_merged_filtered.bed";
-	
-	open(IN,$in); 	
-	open(OUT,"> $out"); 	
-	while(<IN>){
-		chomp $_; 
-		my @s = split(/\t/,$_);
-		if($s[7] > $filter_cases_ME)
-		{
-			if($s[12] eq '.'){
-				print OUT "$_\n";
-			} 
-			elsif(($s[12] >= $filter_bground_sample and $s[15] > $filter_bground_ME)){
-				if($s[6] >= $filter_rescue_cases_ME){print OUT "$_\n";}
-			}
+		##### Get Format Fields of interest
+		my @FORMAT = split(/:/,$s[8]);
+		for(my $j = 0 ; $j < scalar@FORMAT; $j++){
+			if($FORMAT[$j] eq 'GT'){$idx_GT = $j;}	#FORMAT[0]
+			if($FORMAT[$j] eq 'AD'){$idx_AD = $j;}	#FORMAT[1]
+			if($FORMAT[$j] eq 'DP'){$idx_DP = $j;}	#FORMAT[2]
+			if($FORMAT[$j] eq 'GQ'){$idx_GQ = $j;}	#FORMAT[3]
+			if($FORMAT[$j] eq 'PL'){$idx_PL = $j;}	#FORMAT[3]
 		}
-	}
-	close(IN);
-	close(OUT);
 
-}
+		if($s[6] eq 'PASS' or $vqsr ne 'yes'){
+			for(my $i = 0 ; $i < scalar@ped_sample; $i++){
 
-sub PostMergeCasesOnlyFilter {
+				my @D = split(/\t/,$ped_sample[$i]);
+				my @child_FORMAT = split(/:/,$s[$sample1{$D[1]}]);
+				my @mom_FORMAT = split(/:/,$s[$sample1{$D[3]}]);
+				my @dad_FORMAT = split(/:/,$s[$sample1{$D[2]}]);
 
-	my $in = $_[0];
-	my $out = $_[5] // "$name.Round1_merged_filtered.bed";
-	
-	open(IN,$in); 	
-	open(OUT,"> $out");
-	while(<IN>){
-		chomp $_; 
-		my @s = split(/\t/,$_); 
-		if($s[7] > $filter_cases_ME){
-			print OUT "$_\n";
-		}
-	}
-	close(IN);
-	close(OUT);
-}
-### Fix Window file option such that it can be used by both scripts
-sub countMEPerWindow {
-	my $in = $_[0];
-	my $windowFile_R1 = $_[1]; 
-	my $out = $_[2];
-	my @outdata = (); 
-	my @outdataHeader = (); # Header	 
-	my $row = 0; 
-	my $col = 0; 
-	my %hash_pos = (); 
+				## Separate Genotype inputd into 1. Genotype Quality 2.Ref RedDepth 3.Alt ReadDepth 4.Genotype Quality
 
-	open(LIST,$in);		
-	open(OUTPUT, ">$in.$out.data.mat"); 
-	open(OUTPUT_list, ">$in.$name.updated.list"); 
-	
-	checkNexit($windowFile_R1);
-	open(IN,$windowFile_R1);
+				#1. Genotype
+				my $child_GT = $child_FORMAT[$idx_GT];
+				my $mom_GT = $mom_FORMAT[$idx_GT];
+				my $dad_GT = $dad_FORMAT[$idx_GT];
+				#2.Allele Depth
+				my @child_AD = split(/,/,$child_FORMAT[$idx_AD]);
+				my @mom_AD = split(/,/,$mom_FORMAT[$idx_AD]);
+				my @dad_AD = split(/,/,$dad_FORMAT[$idx_AD]);
 
-	my @data =(<IN>);  chomp @data; 
+				### Check for multi allelic SNPs/INDEL
+				my @REF = split(/,/,$s[4]);
+				my $isMulti= scalar@REF;
 
-	while (<LIST>){
-		chomp $_;
-		#print STDERR "$_\n"; 
-		my $file = $_;  
-		
-		my $check1 = checkFile($file,$file);
-		## Remove other redundant chromsomes by intersecting with genome file 
-		if($check1 ne 'true'){system "sed 's/chr//g' $file | $BEDTOOLS intersect -a - -b $windowFile_R1 -u >$file.temp.bed";} 
+				## IF it's not Multi Allelic check if it is an INDEL
+				if(!($child_GT eq '0/0' and $dad_GT eq '0/0' and $mom_GT eq '0/0') and !($child_GT eq '0/0' and $dad_GT eq './.' and $mom_GT eq '0/0') and !($child_GT eq '0/0' and $dad_GT eq '0/0' and $mom_GT eq './.') and !($child_GT eq '0/0' and $dad_GT eq './.' and $mom_GT eq './.')){
+					if((length($s[4]) < 2 and length($s[3]) < 2 ) or $type ne 'SNP'){	#if4 #### Look of simple Denovo not complex ones also exclude Indels
 
-		my $check = checkFile("$file.temp.bed","$file"); # If file is empty exclude from analysis
-		
-		if($check ne 'true'){
-			$row= 0; 		
-			print OUTPUT_list "$file\n";
-			print STDERR "Processing $file\n";
-			$outdataHeader[$col] = "$file";	# Add header info			
-			
-			#system "$BEDTOOLS intersect -a $windowFile_R1 -b $file.temp.bed -wa | $BEDTOOLS groupby -c 3 -o count > $file.count";
-			system "$BEDTOOLS intersect -a $windowFile_R1 -b $file.temp.bed -wa -c > $file.count";
-			#cleanFile ("$file.temp.bed");
-			
-			my %hash = (); 
-			open(IN1,"$file.count"); 
-			while (<IN1>){
-				chomp $_; 
-				my $ll = $_; 
-				my @ss = split(/\t/,$ll);
-				my $pos = "$ss[0]\t$ss[1]\t$ss[2]";
-				#print "$pos\n";
-				$hash{$pos} = $ss[3]; ## Counts
-			}
-			close(IN1);
-			for(my $i = 0 ;$i < scalar@data;$i++){
-				my $ll = $data[$i];
-				my @ss = split(/\t/,$ll); 
-				my $pos = "$ss[0]\t$ss[1]\t$ss[2]";
-				if($col == 0){
-					$hash_pos{$i} = $pos;
-				}				
-				if(exists($hash{$pos})){
-					$outdata[$row][$col] = $hash{$pos}; # Counts
-				}else{
-					$outdata[$row][$col] = '.'; # Zero MEs in window
+						## Ratio if the coverage is non Zero 
+						if(($child_AD[0]+ $child_AD[1]) > 0 and ($mom_AD[0] + $mom_AD[1]) > 0 and ($dad_AD[0] + $dad_AD[1]) > 0){
+
+							## Get BAF = B Allele Ratio
+							$child_BAF =$child_AD[1]/($child_AD[0] + $child_AD[1]);
+							$mom_BAF   =$mom_AD[1]/($mom_AD[0] + $mom_AD[1]) ;
+							$dad_BAF   =$dad_AD[1]/($dad_AD[0] + $dad_AD[1]) ;
+
+##### Filter based on Read Depth and Genotype Quality
+							if($child_FORMAT[$idx_DP] <= $maxDP and $child_FORMAT[$idx_DP] >= $minDP and $child_FORMAT[$idx_GQ] >= $minGQ and
+ 							$mom_FORMAT[$idx_DP] <= $maxDP and $mom_FORMAT[$idx_DP] >= $minDP and $mom_FORMAT[$idx_GQ] >= $minGQ and
+ 							$dad_FORMAT[$idx_DP] <= $maxDP and $dad_FORMAT[$idx_DP] >= $minDP and $dad_FORMAT[$idx_GQ] >= $minGQ){
+ 
+ 								my $PrintStart = "$s[0]\t$s[1]\t$s[1]\t$s[3]\t$s[4]\t$s[6]\t$D[0]";
+ 								my $PrintEnd = "$child_FORMAT[$idx_GT]\t$child_AD[0]\t$child_AD[1]\t$child_FORMAT[$idx_DP]\t$child_FORMAT[$idx_GQ]\t$child_BAF\t$mom_FORMAT[$idx_GT]\t$mom_AD[0]\t$mom_AD[1]\t$mom_FORMAT[$idx_DP]\t$mom_FORMAT[$idx_GQ]\t$mom_BAF\t$dad_FORMAT[$idx_GT]\t$dad_AD[0]\t$dad_AD[1]\t$dad_FORMAT[$idx_DP]\t$dad_FORMAT[$idx_GQ]\t$dad_BAF"; 
+ 								
+  								# Check If the SNP is mendel error
+  								
+ 								## Case 1 de_novo								
+								if($mom_GT eq '0/0' and $dad_GT eq '0/0' and $child_GT ne '0/0' and $child_GT ne './.' and $mom_BAF <= $refBAF and $dad_BAF <= $refBAF){
+									if($child_GT eq '0/1' and $child_BAF <= $hetBAF_max and $child_BAF >= $hetBAF_min and $child_AD[1] >= $minAAD){
+										print ALL "$PrintStart\tde_novo\t$PrintEnd\n" if($SNP_all ne 'No');
+									}
+									if($child_GT eq '1/1' and $child_BAF >= $altBAF){
+										print ALL "$PrintStart\tde_novo\t$PrintEnd\n" if($SNP_all ne 'No');
+									}
+								}
+								## Case 2 Re-checked
+								elsif($mom_GT eq '0/1' and $dad_GT eq '0/0' and $child_GT eq '1/1' and $mom_BAF <= $hetBAF_max and $mom_BAF >= $hetBAF_min and $mom_AD[1] >= $minAAD and $child_BAF >= $altBAF and $dad_BAF <= $refBAF){
+ 										print ERR "$PrintStart\tYES\t$PrintEnd\n";
+										print ALL "$PrintStart\tYES\t$PrintEnd\n" if($SNP_all ne 'No');
+								}
+
+								## Case 3 Re-checked
+								elsif($mom_GT eq '0/1' and $dad_GT eq '1/1' and $child_GT eq '0/0' and $mom_BAF <= $hetBAF_max and $mom_BAF >= $hetBAF_min and $mom_AD[1] >= $minAAD and $child_BAF <= $refBAF and $dad_BAF >= $altBAF){
+ 										print ERR "$PrintStart\tYES\t$PrintEnd\n";
+										print ALL "$PrintStart\tYES\t$PrintEnd\n" if($SNP_all ne 'No');
+								}
+
+								## Case 4 Re-checked
+								elsif($mom_GT eq '1/1' and $dad_GT eq '0/1' and $child_GT eq '0/0' and $mom_BAF >= $altBAF and $dad_BAF <= $hetBAF_max and $dad_BAF >= $hetBAF_min and $dad_AD[1] >= $minAAD and $child_BAF <= $refBAF){
+ 										print ERR "$PrintStart\tYES\t$PrintEnd\n";
+										print ALL "$PrintStart\tYES\t$PrintEnd\n" if($SNP_all ne 'No');
+								}
+
+								## Case 5 Re-checked
+								elsif($mom_GT eq '0/0' and $dad_GT eq '0/1' and $child_GT eq '1/1' and $mom_BAF <= $refBAF and $dad_BAF <= $hetBAF_max and $dad_BAF >= $hetBAF_min and $dad_AD[1] >= $minAAD and $child_BAF >= $altBAF){
+ 										print ERR "$PrintStart\tYES\t$PrintEnd\n";
+										print ALL "$PrintStart\tYES\t$PrintEnd\n" if($SNP_all ne 'No');
+								}
+
+								## Case 6 Re-checked
+								elsif($mom_GT eq '0/0'and $dad_GT eq '1/1' and $child_GT ne '0/1' and $mom_BAF <= $refBAF and $dad_BAF >= $altBAF){
+									if($child_GT eq '0/0' and $child_BAF <= $refBAF){
+ 										print ERR "$PrintStart\tYES\t$PrintEnd\n";
+										print ALL "$PrintStart\tYES\t$PrintEnd\n" if($SNP_all ne 'No');
+									}
+									if($child_GT eq '1/1' and $child_BAF >= $altBAF){
+ 										print ERR "$PrintStart\tYES\t$PrintEnd\n";
+										print ALL "$PrintStart\tYES\t$PrintEnd\n" if($SNP_all ne 'No');
+									}
+								}
+
+								## Case 7 Re-checked
+								elsif($mom_GT eq '1/1' and $dad_GT eq '0/0' and $child_GT ne '0/1' and $mom_BAF >= $altBAF and $dad_BAF <= $refBAF){
+									if($child_GT eq '0/0' and $child_BAF <= $refBAF){
+ 										print ERR "$PrintStart\tYES\t$PrintEnd\n";
+										print ALL "$PrintStart\tYES\t$PrintEnd\n" if($SNP_all ne 'No');
+									}
+									if($child_GT eq '1/1' and $child_BAF >= $altBAF){
+ 										print ERR "$PrintStart\tYES\t$PrintEnd\n";
+										print ALL "$PrintStart\tYES\t$PrintEnd\n" if($SNP_all ne 'No');
+									}
+								}
+
+								## Case 8 Re-checked
+								elsif($mom_GT eq '1/1'	and $dad_GT eq '1/1' and $mom_BAF >= $altBAF and $dad_BAF >= $altBAF){
+									if($child_GT eq '0/0' and $child_BAF <= $refBAF ){
+										print ALL "$PrintStart\tContamination\t$PrintEnd\n" if($SNP_all ne 'No');
+									}
+									if($child_GT eq '0/1' and $child_BAF <= $hetBAF_max and $child_BAF >= $hetBAF_min and $child_AD[1] >= $minAAD){
+										print ALL "$PrintStart\tContamination\t$PrintEnd\n" if($SNP_all ne 'No');
+									}
+									if($child_GT eq '1/1' and $child_BAF >= $altBAF){
+ 										print ALL "$PrintStart\tNo\t$PrintEnd\n" if($SNP_all ne 'No');
+									}
+								}
+								# Normal SNPs
+								else{
+									if($child_GT eq '0/0' and $child_BAF <= $refBAF ){
+	 									print ALL "$PrintStart\tNo\t$PrintEnd\n" if($SNP_all ne 'No');
+									}
+									if($child_GT eq '0/1' and $child_BAF <= $hetBAF_max and $child_BAF >= $hetBAF_min and $child_AD[1] >= $minAAD){
+										print ALL "$PrintStart\tNo\t$PrintEnd\n" if($SNP_all ne 'No');
+									}
+									if($child_GT eq '1/1' and $child_BAF >= $altBAF){
+										print ALL "$PrintStart\tNo\t$PrintEnd\n" if($SNP_all ne 'No');
+									}
+								}
+							} #end if3
+						} #end if2
+					}
 				}
-				$row++; # Number of rows 
-			}
-			$col++; # New File
-			#cleanFile("$file.count"); 
-		}else{
-			#cleanFile("$file.temp.bed");
+			} #end for
 		}
 	}
-	
-	close(LIST);
-	print OUTPUT "#CHROM\tStat\tEnd\t"; 
-	for(my $j = 0 ; $j < $col ;$j++){
-		print OUTPUT "$outdataHeader[$j]"; 
-		
-		if($j < $col-1){
-			print OUTPUT "\t";
-		}
-	}
-	print OUTPUT "\n"; 
-	
-	for(my $i = 0 ; $i < $row ;$i++){
-		for(my $j = 0; $j < $col; $j++){
-		
-			if ($j == 0) {
-				print OUTPUT "$hash_pos{$i}\t";
-			}
-			
-			print OUTPUT "$outdata[$i][$j]";  
-			if($j < $col-1){
-				print OUTPUT "\t";
-			}
-		}
-		print OUTPUT "\n";  
-	}
-	close(OUTPUT);
-	close(IN);
-	close(OUTPUT_list);
-}
-## Get Dimension of resulting file to make sure everything Ran Smoothly 
-sub get_dims{
-	my $file = $_[0];
-	my @s; 
-	my $dim; 
-	open(INN,$file); my $j=0; my $first=0;
-	my $check = 'OK';
-	while(<INN>){
-		chomp $_;
-  		if($first == 0) { @s=split(/\t/,$_); $dim = scalar@s; $first = 1; }
-  		else{
-  			@s=split(/\t/,$_); 
-  			if (scalar@s != $dim) { if($check eq 'OK'){$check = 'Exit';}} 
-  		}
-  		$j++;
-	} 
-	return $check;
-	close INN;
 }
 
-sub cleanFile{
-	my $file = $_[0];
-	if(-e $file){
-		system "rm -f $file"; 
-	}
-}	
+close(IN);
 
-sub SeperateSample{
-	my $file = $_[0];
-	my $out = $_[1] // "$file.SeperateSample.txt";	
-	open(SEP,$file);
-	open(OUT,"> $out");
-	 while(<SEP>) {
-		chomp $_; 
-		my @s = split(/\t/,$_);
-		my @s1 = split(/\|/,$s[3]);
-		for(my $i = 0 ; $i < scalar@s1; $i++){
-			print OUT "$s[0]\t$s[1]\t$s[2]\t$s1[$i]\t$s[4]\t$s[5]\t$s[6]\t$s[7]\n";
-			#if($i < scalar@s1-1){print OUT "\n"; }
-		}
-	}
-	close(SEP);
-	close(OUT); 
+sub help{
+print STDERR "Default Usage:\n	perl ME_UPD_Contamination_Detection_From_TrioVCF.pl -i input -p pedigreeFile\n";
+exit();
 }
+ 
+sub verbose{
+print STDERR 
 
-sub SplitBySample{
-	my $file =$_[0]; 
-	my $col  =$_[1]; 
-	system "mkdir -p $name.work";
+"Default Usage:\n	perl ME_UPD_Contamination_Detection_From_TrioVCF.pl -i input -p pedigreeFile -o output -V no -d 5 -D 1000 -c 3 -a 0.9 -R 0.1 -h 0.2 -H 0.8 -G 30
+												or
+	perl ME_UPD_Contamination_Detection_From_TrioVCF.pl --input input -p pedigreeFile --out_prefix output --VQSRfilter no --minDP 5 --maxDP 1000 --minAAD 3 --altBAF 0.9 --refBAF 0.1 --hetBAF_min 0.2 --hetBAF_max 0.8 --minGQ 30
 
-	$col = $col-1;
-	open(IN,$file); 
-	my %hash = (); 
-	
-	system "rm -f $name.work/*.MEM.sample.bed"; 
-	system "rm -f $name.ME.SepSample.list"; 
-	open(OUTPUT2, ">> $name.ME.SepSample.list"); 
-	while(<IN>)
-	{
-		chomp $_; 
-		my $l = $_; 
-		my @s  = split(/\t/,$l); 
-		my $outFile = basename("$s[$col]");
-		#print STDERR "$outFile\n";
-		open(OUTPUT, ">> $name.work/$outFile.MEM.sample.bed"); 		
-		print OUTPUT "$l\n"; 
-		if(!(exists($hash{$outFile}))){
-			print OUTPUT2 "$name.work/$outFile.MEM.sample.bed\n"; 
-			$hash{$outFile} = $outFile; 
-		}
-	}
-	close(IN);
-	close(OUTPUT); 
-	close(OUTPUT2); 
-}
-
-sub FilterRound3{
-	my $file3 =$_[0]; 
-	my $out3  =$_[1]; 
-	my $filter  =$_[2]; 
-	open(INR3,$file3); 
-	system "rm -f $out3"; 
-	open(OUTPUT3, ">> $out3"); 
-	while(<INR3>)
-	{
-		chomp $_; 
-		my $l = $_; 
-		if($l !~ /#CHROM/){
-			my @s  = split(/\t/,$l); 
-			if($s[8] >= $filter){
-				print OUTPUT3 "$l\n"; 
-			}
-		}
-		else{
-			print OUTPUT3 "$l\n";
-		}			
-	}	
-	close(INR3);
-	close(OUTPUT3); 
+	Arguments:
+		-i, --input		Input inputname [requried]
+		-o, --out_prefix	Output input name prefix [default 'output']
+		-p, --pedigree		pedigree file [requried]
+		-V, --VQSRfilter	VQSR filter to apply [defalut 'yes']
+		-d, --minDP		Minimum read depth required across a Trio[5]
+		-D, --maxDP		Maximum read depth allowed across a Trio[1000]
+		-c, --minAAD		Minimum alternative allele depth [3]
+		-a, --altBAF		Minimum B-allele frequency threshold for alternate site i.e. 1/1 [0.9]
+		-R, --refBAF		Maximum B-allele frequency threshold for refference site i.e. 0/0 [0.1]
+		-m, --hetBAF_min	Minimum B-allele frequency threshold for heterozygous sites i.e. 0/1 [0.2]
+		-H, --hetBAF_max	Maximum B-allele frequency threshold for heterozygous sites i.e. 0/1 [0.8]
+		-G, --minGQ		Minimum genotype quality cutoff[30]
+		-h, --help		Usage summary
+		-v, --verbose		Detailed Usage Information\n";
+exit();
 }
