@@ -37,7 +37,7 @@
 			
 #### Step 4: Run MEM pipeline
 
-Note : This step assumes that bedtols V2.26.0 or higher (https://github.com/arq5x/bedtools2) is installed. It can be in the path or full path can be provided using '--tool' argument.
+Note : This step assumes that bedtools V2.26.0 or higher (https://github.com/arq5x/bedtools2) is installed. It can be in the path or full path can be provided using '--tool' argument.
 
 	- Script provided: MEM_windowAnalysis.pl
 	- Default Usage: perl MEM_windowAnalysis.pl -a cases -c caseSample.list_of_files -b backgroundSample.list_of_files -w 2000000 -s 100000
