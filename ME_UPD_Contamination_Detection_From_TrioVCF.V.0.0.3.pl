@@ -77,7 +77,6 @@ my $chr = 1;
 
 open(DATA, $pedigree) or die "cannot open pedigree input $pedigree\n"; 
 my @data = <DATA>; chomp @data;
-print STDERR "$data[0]\n";
 
 if ($input =~ /\.gz$/){
 	open(IN, "gzip -dc $input |") || die "can't open $input\n";
@@ -106,7 +105,10 @@ while(<IN>){
 		#### Validate Pedigree input
 
 		my $j = 0; # It is important 
-		print STDERR "\nMake sure Pedigree order is correct : FamilyID Proband Father Mother\n";
+		print STDERR "#######################################################################\n";
+		print STDERR "Make sure Pedigree order is correct\nFamily\tProband\tFather\tMother\n$data[0]\n";
+		print STDERR "#######################################################################\n";
+
 		for(my $i = 0 ; $i < scalar@data; $i++){
 			my @D = split(/\t/,$data[$i]);
 			if(exists($sample1{$D[1]}) and exists($sample1{$D[2]}) and exists($sample1{$D[3]}) and $data[$i] !~ /#/){
@@ -142,7 +144,7 @@ while(<IN>){
 			if($FORMAT[$j] eq 'PL'){$idx_PL = $j;}	#FORMAT[3]
 		}
 
-		if($s[6] eq 'PASS' or $vqsr ne 'yes'){
+		if($s[6] eq 'PASS' or lc($vqsr) ne 'yes'){
 			for(my $i = 0 ; $i < scalar@ped_sample; $i++){
 
 				my @D = split(/\t/,$ped_sample[$i]);
