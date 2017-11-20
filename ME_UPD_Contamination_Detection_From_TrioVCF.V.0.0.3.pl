@@ -184,7 +184,7 @@ while(<IN>){
  							$mom_FORMAT[$idx_DP] <= $maxDP and $mom_FORMAT[$idx_DP] >= $minDP and $mom_FORMAT[$idx_GQ] >= $minGQ and
  							$dad_FORMAT[$idx_DP] <= $maxDP and $dad_FORMAT[$idx_DP] >= $minDP and $dad_FORMAT[$idx_GQ] >= $minGQ){
  
- 								my $PrintStart = "$s[0]\t$s[1]\t$s[1]\t$s[3]\t$s[4]\t$s[6]\t$D[0]";
+ 								my $PrintStart = "$s[0]\t$s[1]\t$s[1]\t$s[3]\t$s[4]\t$s[6]\t$D[1]";
  								my $PrintEnd = "$child_FORMAT[$idx_GT]\t$child_AD[0]\t$child_AD[1]\t$child_FORMAT[$idx_DP]\t$child_FORMAT[$idx_GQ]\t$child_BAF\t$mom_FORMAT[$idx_GT]\t$mom_AD[0]\t$mom_AD[1]\t$mom_FORMAT[$idx_DP]\t$mom_FORMAT[$idx_GQ]\t$mom_BAF\t$dad_FORMAT[$idx_GT]\t$dad_AD[0]\t$dad_AD[1]\t$dad_FORMAT[$idx_DP]\t$dad_FORMAT[$idx_GQ]\t$dad_BAF"; 
  								
   								# Check If the SNP is mendel error
