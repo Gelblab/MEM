@@ -282,9 +282,10 @@ while(<IN>){
 close(IN);
 
 sub help{
+print STDERR 
 "Default Usage:\n	perl ME_UPD_Contamination_Detection_From_TrioVCF.pl -i input -p pedigreeFile -o output -V no -d 5 -D 1000 -c 3 -a 0.9 -R 0.1 -m 0.2 -H 0.8 -G 30
 												or
-	perl ME_UPD_Contamination_Detection_From_TrioVCF.pl --input input -p pedigreeFile --out_prefix output --VQSRfilter no --minDP 5 --maxDP 1000 --minAAD 3 --altBAF 0.9 --refBAF 0.1 --hetBAF_min 0.2 --hetBAF_max 0.8 --minGQ 30
+	perl ME_UPD_Contamination_Detection_From_TrioVCF.pl --input input -p pedigreeFile --out_prefix output --VQSRfilter no --minDP 5 --maxDP 1000 --minAAD 3 --altBAF 0.9 --refBAF 0.1 --hetBAF_min 0.2 --hetBAF_max 0.8 --minGQ 30\n";
 exit();
 }
  
