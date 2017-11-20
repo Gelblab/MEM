@@ -419,7 +419,7 @@ if(lc($run_from) eq 'split' or $run_from eq 'SPLIT' or $step_check = 'complete')
 		my $me_file = $s[1];
 		$me_file =~ s{\.[^.]+$}{}; 
 		system "printf \"#CHROM\tStart\tEnd\tSample\tME_Per_Merged_Window\tNum_Window\tMin_ME\tMax_ME\tMean_ME\n\" > $me_file.merged.bed";
-		system "bedtools intersect -a $me_file.bed -b $original_file -c -nonamecheck | bedtools merge -i - -c 4,9,9,9,9,9 -o distinct,collapse,count,min,max,mean -delim \"|\" >> $me_file.merged.bed";
+		system "bedtools intersect -a $me_file.bed -b $original_file -c | bedtools merge -i - -c 4,9,9,9,9,9 -o distinct,collapse,count,min,max,mean -delim \"|\" >> $me_file.merged.bed";
 		# FilterRound3(input,output,number of me to filer)
 		FilterRound3("$me_file.merged.bed","$me_file.merged.filter.bed",2);
 	}
