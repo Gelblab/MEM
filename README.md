@@ -1,3 +1,7 @@
+# Paper Published
+## Robust identification of deletions in exome and genome sequence data based on clustering of Mendelian errors
+### http://onlinelibrary.wiley.com/doi/10.1002/humu.23419/full
+
 # MEM
 ### MEM : Mendelian Error Method to rapidly detect deletions in whole exome and genome trio sequence data
 
